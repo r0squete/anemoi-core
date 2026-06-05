@@ -104,7 +104,8 @@ class BasePlotCallback(Callback, ABC):
         if isinstance(pl_module.model.model, AnemoiModelEncProcDecInterpolator):
             output_times = (len(config.training.explicit_times.target), "time_interp")
         else:
-            output_times = (getattr(pl_module, "rollout", 0), "forecast")
+            rollout = getattr(pl_module, "rollout", None) or getattr(pl_module, "n_step_output", 1)
+            output_times = (rollout, "forecast")
         return output_times
 
     @rank_zero_only
