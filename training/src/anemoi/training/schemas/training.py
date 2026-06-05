@@ -369,6 +369,8 @@ class BaseDDPStrategySchema(BaseModel):
     "Number of GPUs per model."
     read_group_size: PositiveInt = Field(example=1)
     "Number of GPUs per reader group. Defaults to number of GPUs."
+    find_unused_parameters: bool = Field(default=False)
+    "Whether to detect unused parameters in DDP (needed for GraphDownscaler)."
 
 
 class DDPEnsGroupStrategyStrategySchema(BaseDDPStrategySchema):
