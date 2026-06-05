@@ -32,31 +32,24 @@ LOGGER = logging.getLogger(__name__)
 class BaseSingleStepGraphModule(BaseGraphModule, ABC):
     """Graph neural network autoencoder for PyTorch Lightning."""
 
-    def _step(
-        self,
-        batch: dict[str, torch.Tensor],
-        validation_mode: bool = False,
-    ) -> tuple[torch.Tensor, Mapping[str, torch.Tensor]]:
+    @property
+    def multi_step(self) -> int:
+        return max(self.n_step_input, self.n_step_output)
 
-        required_time_steps = max(self.n_step_input, self.n_step_output)
+    def get_inputs(self, batch: dict, sample_length: int) -> dict:
         x = {}
         for dataset_name, dataset_batch in batch.items():
             msg = (
                 f"Batch length not sufficient for requested n_step_input/n_step_output for {dataset_name}!"
-                f" {dataset_batch.shape[1]} !>= {required_time_steps}"
-            )
-            assert dataset_batch.shape[1] >= required_time_steps, msg
-            x[dataset_name] = dataset_batch[
-                :,
-                0:required_time_steps,
-                ...,
-                self.data_indices[dataset_name].data.input.full,
-            ]  # (bs, multi_step, latlon, nvar)
-            msg = (
-                f"Batch length not sufficient for requested multi_step length for {dataset_name}!"
-                f", {dataset_batch.shape[1]} !>= {sample_length}"
+                f" {dataset_batch.shape[1]} !>= {sample_length}"
             )
             assert dataset_batch.shape[1] >= sample_length, msg
+            x[dataset_name] = dataset_batch[
+                :,
+                0:sample_length,
+                ...,
+                self.data_indices[dataset_name].data.input.full,
+            ]
         return x
 
     def get_targets(self, batch: dict[str, torch.Tensor], lead_step: int) -> dict[str, torch.Tensor]:

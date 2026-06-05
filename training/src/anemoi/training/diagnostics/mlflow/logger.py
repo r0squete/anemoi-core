@@ -776,4 +776,5 @@ class AnemoiMLflowLogger(BaseAnemoiMLflowLogger):
                     self.tracking_uri,
                 )
                 self.auth.authenticate()
-                health_check(self.tracking_uri)
+                if enabled:
+                    health_check(self.tracking_uri)
