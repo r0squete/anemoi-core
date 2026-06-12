@@ -505,6 +505,17 @@ class DownscalingSchema(ForecasterSchema):
     "Number of input steps for the model. E.g. 1 = single step scheme, X(t) used to predict Y(t)."
 
 
+class DiffusionDownscalerSchema(ForecasterSchema):
+    """Training schema for diffusion-based downscaling (GraphDiffusionDownscaler)."""
+
+    model_task: Literal["anemoi.training.train.tasks.GraphDiffusionDownscaler"] = Field(..., alias="model_task")
+    "Training objective."
+    multistep_input: PositiveInt = Field(default=1, example=1)
+    "Number of input steps. E.g. 1 = single step, X(t) → Y(t)."
+    training_approach: str = Field(default="probabilistic_low_noise", example="probabilistic_low_noise")
+    "Diffusion training approach (e.g. probabilistic_low_noise)."
+
+
 class InterpolationMultiSchema(BaseTrainingSchema):
     model_task: Literal["anemoi.training.train.tasks.GraphMultiOutInterpolator"] = Field(..., alias="model_task")
     "Training objective."
@@ -522,6 +533,7 @@ TrainingSchema = Annotated[
     | DiffusionForecasterSchema
     | DiffusionTendForecasterSchema
     | AutoencoderSchema
-    | DownscalingSchema,
+    | DownscalingSchema
+    | DiffusionDownscalerSchema,
     Discriminator("model_task"),
 ]
