@@ -234,9 +234,14 @@ class GraphDiffusionDownscaler(BaseGraphModule):
         - Prognostic output channels (in both source and target): residual prediction
         - Diagnostic output channels (only in target): direct prediction
         """
-        x_in_lres = batch["in_lres"]
-        x_in_hres = batch["in_hres"]
-        y = batch["out_hres"]
+        # Slice to n_step_input / n_step_output timesteps.
+        # MultiDataset loads n_step_input + n_step_output timesteps per sample.
+        # Without slicing, _assemble_input sees 2×vars instead of 1×vars in the
+        # time dimension, causing a shape mismatch in emb_nodes_src.
+        # Spatial downscaling: conditioning and target share the same timestep (0).
+        x_in_lres = batch["in_lres"][:, : self.n_step_input]
+        x_in_hres = batch["in_hres"][:, : self.n_step_input]
+        y = batch["out_hres"][:, : self.n_step_output]
 
         target_ds = self.model.model._decoder_datasets[0]  # e.g. "out_hres"
         source_ds = self._residual_pairs.get(target_ds)  # e.g. "in_lres", or None
@@ -268,6 +273,9 @@ class GraphDiffusionDownscaler(BaseGraphModule):
             )
         else:
             target = self.model.pre_processors[target_ds](y, in_place=False)
+
+        # Add ensemble dimension to x_in_hres: (batch, time, grid, vars) → (batch, time, 1, grid, vars)
+        x_in_hres = x_in_hres[:, :, None, :, :]
 
         # Normalize inputs (after residual computation which needs raw data)
         x_in_lres_upsampled = self.model.pre_processors["in_lres"](x_in_lres_upsampled, in_place=False)
