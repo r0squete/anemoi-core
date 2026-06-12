@@ -60,6 +60,10 @@ class DefinedModels(str, Enum):
         "anemoi.models.models.diffusion_encoder_processor_decoder.AnemoiDiffusionTendModelEncProcDec"
     )
     ANEMOI_DIFFUSION_TEND_MODEL_ENC_PROC_DEC_SHORT = "anemoi.models.models.AnemoiDiffusionTendModelEncProcDec"
+    ANEMOI_D2_MODEL_ENC_PROC_DEC = (
+        "anemoi.models.models.diffusiondownscaler_encoder_processor_decoder.AnemoiD2ModelEncProcDec"
+    )
+    ANEMOI_D2_MODEL_ENC_PROC_DEC_SHORT = "anemoi.models.models.AnemoiD2ModelEncProcDec"
     ANEMOI_MODEL_AUTOENCODER = "anemoi.models.models.autoencoder.AnemoiModelAutoEncoder"
     ANEMOI_MODEL_AUTOENCODER_SHORT = "anemoi.models.models.AnemoiModelAutoEncoder"
     ANEMOI_MODEL_HIER_AUTOENCODER = "anemoi.models.models.autoencoder.AnemoiModelHierarchicalAutoEncoder"
@@ -76,6 +80,15 @@ class Model(BaseModel):
 class DiffusionModel(Model):
     diffusion: DiffusionSchema = Field(default=None)
     "Diffusion configuration for diffusion models"
+
+
+class DiffusionDownscalingModel(DiffusionModel):
+    encoder_datasets: list[str] = Field(default_factory=list)
+    "Dataset names for which an encoder is built (multi-dataset downscaling models)."
+    decoder_datasets: list[str] = Field(default_factory=list)
+    "Dataset names for which a decoder is built (multi-dataset downscaling models)."
+    residual_prediction: dict[str, str] = Field(default_factory=dict)
+    "Mapping of target_dataset -> source_dataset used to add a residual connection."
 
 
 class TrainableParameters(PydanticBaseModel):
@@ -195,6 +208,10 @@ class DiffusionSchema(BaseModel):
     "Minimum noise level for training"
     rho: PositiveFloat = Field(default=7.0, examples=[7.0])
     "Karras schedule parameter for training noise distribution"
+    log_normal_mean: float = Field(default=-1.2, examples=[-1.2])
+    "Mean of the log-normal noise level distribution used during training."
+    log_normal_std: PositiveFloat = Field(default=1.2, examples=[1.2])
+    "Standard deviation of the log-normal noise level distribution used during training."
     noise_embedder: dict = Field(default_factory=dict)
     "Noise embedder configuration with _target_ for Hydra instantiation"
     inference_defaults: dict = Field(default_factory=dict)
@@ -319,6 +336,13 @@ class DiffusionTendModelSchema(DiffusionModelSchema):
     "Whether to condition the noise injection on the residual connection."
 
 
+class DiffusionDownscalingModelSchema(DiffusionModelSchema):
+    model: DiffusionDownscalingModel = Field(default_factory=DiffusionDownscalingModel)
+    "Diffusion downscaling model schema (multi-dataset encoder/decoder + residual prediction)."
+    residual: dict[str, ResidualConnectionSchema]
+    "Per-dataset residual connection schema."
+
+
 class HierarchicalModelSchema(BaseModelSchema):
     enable_hierarchical_level_processing: bool = Field(default=False)
     "Toggle to do message passing at every downscaling and upscaling step"
@@ -327,5 +351,10 @@ class HierarchicalModelSchema(BaseModelSchema):
 
 
 ModelSchema = Union[
-    BaseModelSchema, EnsModelSchema, HierarchicalModelSchema, DiffusionModelSchema, DiffusionTendModelSchema
+    BaseModelSchema,
+    EnsModelSchema,
+    HierarchicalModelSchema,
+    DiffusionModelSchema,
+    DiffusionTendModelSchema,
+    DiffusionDownscalingModelSchema,
 ]
