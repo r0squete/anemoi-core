@@ -274,9 +274,6 @@ class GraphDiffusionDownscaler(BaseGraphModule):
         else:
             target = self.model.pre_processors[target_ds](y, in_place=False)
 
-        # Add ensemble dimension to x_in_hres: (batch, time, grid, vars) → (batch, time, 1, grid, vars)
-        x_in_hres = x_in_hres[:, :, None, :, :]
-
         # Normalize inputs (after residual computation which needs raw data)
         x_in_lres_upsampled = self.model.pre_processors["in_lres"](x_in_lres_upsampled, in_place=False)
         x_in_hres = self.model.pre_processors["in_hres"](x_in_hres, in_place=False)
