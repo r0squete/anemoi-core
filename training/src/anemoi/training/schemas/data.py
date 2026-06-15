@@ -62,5 +62,5 @@ class DataSchema(PydanticBaseModel):
     "Time step of model (must be multiple of frequency)."
     datasets: dict[str, DatasetDataSchema] | None = None
     "Dictionary mapping dataset names to their configurations."
-    num_features: int | None
-    "Number of features in the forecast state. To be set in the code."
+    num_features: int | dict[str, int] | None
+    "Number of features in the forecast state (int for single-dataset, dict per-dataset for multi-dataset). To be set in the code."
