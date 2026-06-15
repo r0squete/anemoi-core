@@ -430,25 +430,16 @@ class AnemoiD2ModelEncProcDec(AnemoiDiffusionModelEncProcDec):
         - x_in_hres (forcings): multi_step * num_channels_in_hres
         - y_noised (target): multi_step * num_channels_out_hres
         - node_attributes (lat/lon etc)
-
-        NOTE: uses data.input.full / data.output.full (not model.input / model.output)
-        because the diffusiondownscaler task skips _normalize_batch and passes raw
-        batch tensors with the full dataset feature vector to the model.
         """
-        num_channels_in_lres = len(self.data_indices["in_lres"].data.input.full)
-        num_channels_in_hres = len(self.data_indices["in_hres"].data.input.full)
-        num_channels_out_hres = len(self.data_indices["out_hres"].data.output.full)
+        num_channels_in_lres = len(self.data_indices["in_lres"].model.input)
+        num_channels_in_hres = len(self.data_indices["in_hres"].model.input)
+        num_channels_out_hres = len(self.data_indices["out_hres"].model.output)
 
         input_dim = (
             self.multi_step * num_channels_in_lres
             + self.multi_step * num_channels_in_hres
             + self.multi_step * num_channels_out_hres
             + self.node_attributes[dataset_name].attr_ndims[self._graph_name_data]
-        )
-        LOGGER.info(
-            "_calculate_input_dim for '%s': in_lres=%d, in_hres=%d, out_hres=%d, node_attrs=%d → total=%d",
-            dataset_name, num_channels_in_lres, num_channels_in_hres, num_channels_out_hres,
-            self.node_attributes[dataset_name].attr_ndims[self._graph_name_data], input_dim,
         )
         return input_dim
 
