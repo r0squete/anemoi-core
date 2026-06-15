@@ -327,7 +327,7 @@ class GraphDiffusionDownscaler(BaseGraphModule):
         else:
             y_pred_full = y_pred_out[target_ds]
 
-        return loss, metrics_next, [y_pred_full]
+        return loss, metrics_next, [{target_ds: y_pred_full}]
 
     def _noise_target(
         self,
