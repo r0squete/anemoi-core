@@ -152,7 +152,7 @@ class DownscalingPlotSample(BasePlotAdditionalMetrics):
             grid_shard_shapes=None,
             model_comm_group=None,
         )[
-            self.sample_idx, 0, 0, ...
+            self.sample_idx, 0, ...
         ].cpu()  # shape: (grid, all_vars), timestep 0, no ensemble dim initially
 
         # Select channels matching the plotted parameters
