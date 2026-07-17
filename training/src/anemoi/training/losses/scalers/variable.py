@@ -104,4 +104,15 @@ class GeneralVariableLossScaler(BaseVariableLossScaler):
                     is None
                 ), f"Variable {variable_name} is not allowed to have a separate scaling besides {variable_ref}."
 
+        known_refs = {
+            self.variable_metadata_extractor.get_group_and_level(v)[1]
+            for v in self.data_indices.model.output.name_to_index
+        }
+        orphans = set(self.weights) - known_refs - {"default"}
+        if orphans:
+            LOGGER.warning(
+                "general_variable: weight keys with no matching variable (ignored, do not affect the loss): %s",
+                sorted(orphans),
+            )
+
         return variable_loss_scaling
