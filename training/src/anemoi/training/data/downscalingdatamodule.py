@@ -101,11 +101,19 @@ class DownscalingAnemoiDatasetsDataModule(AnemoiDatasetsDataModule):
             else:
                 # Variable not in residual stats — use neutral defaults
                 # (mean=0, stdev=1 means no normalization change for these channels)
-                LOGGER.debug("Variable %s not in residual statistics, using neutral defaults", field_name)
+                LOGGER.warning("Variable %s not in residual statistics, using neutral defaults", field_name)
                 mean_array.append(0.0)
                 stdev_array.append(1.0)
                 maximum_array.append(1.0)
                 minimum_array.append(-1.0)
+
+        orphan_stats = set(residual_stats.get("mean", {})) - set(field_names)
+        if orphan_stats:
+            LOGGER.warning(
+                "residual stats: keys with no matching variable in %s (ignored): %s",
+                dataset_name,
+                sorted(orphan_stats),
+            )
 
         return {
             "mean": np.array(mean_array),
