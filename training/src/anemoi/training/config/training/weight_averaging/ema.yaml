@@ -1,0 +1,2 @@
+_target_: anemoi.training.diagnostics.callbacks.weight_averaging.EMAWeightAveraging
+decay: 0.999

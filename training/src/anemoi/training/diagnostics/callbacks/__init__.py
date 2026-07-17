@@ -26,6 +26,7 @@ from anemoi.training.diagnostics.callbacks.optimiser import LearningRateMonitor
 from anemoi.training.diagnostics.callbacks.optimiser import StochasticWeightAveraging
 from anemoi.training.diagnostics.callbacks.provenance import ParentUUIDCallback
 from anemoi.training.diagnostics.callbacks.sanity import CheckVariableOrder
+from anemoi.training.diagnostics.callbacks.weight_averaging import _get_weight_averaging_callback
 from anemoi.training.schemas.base_schema import BaseSchema
 from anemoi.training.utils.checkpoint import RegisterMigrations
 
@@ -228,6 +229,9 @@ def get_callbacks(config: DictConfig) -> list[Callback]:
 
     # Extend with config enabled callbacks
     trainer_callbacks.extend(_get_config_enabled_callbacks(config))
+
+    # Weight averaging callback (EMA/SWA, step-based)
+    trainer_callbacks.extend(_get_weight_averaging_callback(getattr(config.training, "weight_averaging", None)))
 
     # Progress bar callback
     trainer_callbacks.extend(_get_progress_bar_callback(config))

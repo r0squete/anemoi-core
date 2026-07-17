@@ -87,6 +87,26 @@ class OptimizerSchema(PydanticBaseModel):
     """Full path to the optimizer class, e.g. `torch.optim.AdamW`."""
 
 
+class WeightAveragingSchema(PydanticBaseModel):
+    """Hydra instantiation config for a weight averaging callback (EMA or SWA).
+
+    Choosing the PydanticBaseModel to allow extra inputs (e.g. decay, update_starting_at_step).
+
+    Example:
+        weight_averaging:
+          _target_: anemoi.training.diagnostics.callbacks.weight_averaging.EMAWeightAveraging
+          decay: 0.999
+          update_starting_at_step: 1000
+
+    The stock ``pytorch_lightning.callbacks.*WeightAveraging`` classes also instantiate but pair
+    parameters/buffers positionally; that is unsafe with anemoi imputers and updating loss scalers
+    (a warning will be logged at runtime).
+    """
+
+    target_: str = Field(..., alias="_target_")
+    """Full path to the weight averaging callback class."""
+
+
 class ExplicitTimes(BaseModel):
     """Time indices for input and output.
 
@@ -435,6 +455,8 @@ class BaseTrainingSchema(BaseModel):
     "Config for stochastic weight averaging."
     training_loss: DatasetDict[LossSchemas]
     "Training loss configuration."
+    weight_averaging: WeightAveragingSchema | None = Field(default=None)
+    "Config for step-based weight averaging (SWA or EMA, cherry-picked). Set to null to disable."
     loss_gradient_scaling: bool = False
     "Dynamic rescaling of the loss gradient. Not yet tested."
     scalers: DatasetDict[dict[str, ScalerSchema]]
