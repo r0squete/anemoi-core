@@ -51,6 +51,14 @@ class AnemoiD2ModelEncProcDec(AnemoiDiffusionModelEncProcDec):
         self._encoder_datasets = model_config["model"]["model"].get("encoder_datasets", None)
         self._decoder_datasets = model_config["model"]["model"].get("decoder_datasets", None)
 
+        # Role-split (anti-leakage): datasets encoded but never decoded and never given the
+        # noised target (pure conditioning, goes in through the mesh); vs. the decoded target
+        # dataset, whose encoder only sees the noised target + node attrs (thin skip).
+        self._conditioning_only_datasets = set(
+            model_config["model"]["model"].get("conditioning_only_datasets", []) or []
+        )
+        self._history_less_datasets = set(model_config["model"]["model"].get("history_less_datasets", []) or [])
+
         # Residual prediction: maps target_dataset -> source_dataset for residual computation.
         # Must be a dict {target: source} e.g. {"out_hres": "in_lres"}, or False/empty for none.
         raw = model_config["model"]["model"].get("residual_prediction", False)
@@ -423,25 +431,32 @@ class AnemoiD2ModelEncProcDec(AnemoiDiffusionModelEncProcDec):
             super()._build_residual(residual_config)
 
     def _calculate_input_dim(self, dataset_name: str) -> int:
-        """Calculate input dimension for downscaler.
+        """Calculate per-dataset encoder input dimension, split by role.
 
-        For downscaler, the encoder input concatenates:
-        - x_in_lres (upsampled): multi_step * num_channels_in_lres
-        - x_in_hres (forcings): multi_step * num_channels_in_hres
-        - y_noised (target): multi_step * num_channels_out_hres
-        - node_attributes (lat/lon etc)
+        Role-split (anti-leakage): each dataset is encoded on its own, so its
+        input dim only reflects what that encoder actually receives.
+
+        - conditioning_only (e.g. in_lres, in_hres): its own state + node attrs.
+          Never sees the noised target -> conditioning can only reach the
+          decoder through the shared hidden mesh, not through a fine skip.
+        - history_less (e.g. out_hres): only the noised target + node attrs.
+          This is also what the decoder's skip connection carries, so it stays
+          thin by construction (no channel for in_lres/in_hres to leak through).
         """
-        num_channels_in_lres = len(self.data_indices["in_lres"].model.input)
-        num_channels_in_hres = len(self.data_indices["in_hres"].model.input)
-        num_channels_out_hres = len(self.data_indices["out_hres"].model.output)
+        node_attr_dim = self.node_attributes[dataset_name].attr_ndims[self._graph_name_data]
 
-        input_dim = (
-            self.multi_step * num_channels_in_lres
-            + self.multi_step * num_channels_in_hres
-            + self.multi_step * num_channels_out_hres
-            + self.node_attributes[dataset_name].attr_ndims[self._graph_name_data]
+        if dataset_name in self._history_less_datasets:
+            return self.multi_step * self.num_output_channels[dataset_name] + node_attr_dim
+
+        if dataset_name in self._conditioning_only_datasets:
+            return self.multi_step * len(self.data_indices[dataset_name].model.input) + node_attr_dim
+
+        # Not used by the current downscaling role-split config, kept for completeness.
+        return (
+            self.multi_step * len(self.data_indices[dataset_name].model.input)
+            + self.multi_step * self.num_output_channels[dataset_name]
+            + node_attr_dim
         )
-        return input_dim
 
     def forward(
         self,
@@ -474,18 +489,19 @@ class AnemoiD2ModelEncProcDec(AnemoiDiffusionModelEncProcDec):
         dict[str, torch.Tensor]
             Model prediction dict with key "out_hres"
         """
-        # Multi-dataset case - use "out_hres" as the output dataset name
-        dataset_name = "out_hres"
+        # Role-split forward: one encoder per dataset in self._encoder_datasets, their hidden
+        # latents are summed before the processor, and only the target dataset is decoded.
+        # Conditioning (in_lres, in_hres) is therefore forced through the shared mesh instead
+        # of leaking directly to the decoder via a fat skip connection.
+        dataset_names = list(self._encoder_datasets)
+        target_ds = self._decoder_datasets[0]
 
-        # Extract inputs from dicts
-        x_in_lres = x["in_lres"]
-        x_in_hres = x["in_hres"]
-        y_noised_tensor = y_noised["out_hres"]
-        sigma_tensor = sigma["out_hres"]
+        y_target = y_noised[target_ds]
+        sigma_tensor = sigma[target_ds]
 
         # Extract and validate batch & ensemble sizes
-        batch_size = x_in_lres.shape[0]
-        ensemble_size = x_in_lres.shape[2]
+        batch_size = y_target.shape[0]
+        ensemble_size = y_target.shape[2]
 
         bse = batch_size * ensemble_size
         in_out_sharded = grid_shard_shapes is not None
@@ -500,9 +516,10 @@ class AnemoiD2ModelEncProcDec(AnemoiDiffusionModelEncProcDec):
         # Expand to 5D: (batch, 1, ensemble, 1, cond_dim) for _generate_noise_conditioning
         noise_cond = noise_cond_base[:, None, None, None, :].expand(batch_size, 1, ensemble_size, 1, cond_dim)
 
-        # Prepare noise conditioning
+        # Noise conditioning is built once, from the target dataset's node counts, and reused for
+        # every encoder: valid only because all encoder_datasets share the same data/hidden grid.
         c_data, c_hidden, _, _, _ = self._generate_noise_conditioning(
-            noise_cond, dataset_name=dataset_name, edge_conditioning=False
+            noise_cond, dataset_name=target_ds, edge_conditioning=False
         )
         shape_c_data = get_shard_shapes(c_data, 0, model_comm_group=model_comm_group)
         shape_c_hidden = get_shard_shapes(c_hidden, 0, model_comm_group=model_comm_group)
@@ -514,34 +531,48 @@ class AnemoiD2ModelEncProcDec(AnemoiDiffusionModelEncProcDec):
         processor_kwargs = {"cond": c_hidden}
         bwd_mapper_kwargs = {"cond": (c_hidden, c_data)}
 
-        # Assemble input with two separate inputs
-        x_data_latent, x_skip, shard_shapes_data = self._assemble_input(
-            x_in_lres, x_in_hres, y_noised_tensor, bse, grid_shard_shapes, model_comm_group, dataset_name
-        )
-
-        x_hidden_latent = self.node_attributes[dataset_name](self._graph_name_hidden, batch_size=batch_size)
+        x_hidden_latent = self.node_attributes[target_ds](self._graph_name_hidden, batch_size=batch_size)
         shard_shapes_hidden = get_shard_shapes(x_hidden_latent, 0, model_comm_group=model_comm_group)
 
-        encoder_edge_attr, encoder_edge_index, enc_edge_shard_shapes = self.encoder_graph_provider[
-            dataset_name
-        ].get_edges(
-            batch_size=bse,
-            model_comm_group=model_comm_group,
-        )
+        # Encode every dataset with its own encoder; keep the target's data-space latent for the
+        # decoder's (thin) skip connection.
+        dataset_latents = {}
+        x_data_latent_target = None
+        shard_shapes_data_target = None
+        for dataset_name in dataset_names:
+            x_in = x.get(dataset_name)
+            y_in = y_noised.get(dataset_name)
+            x_data_latent, _, shard_shapes_data = self._assemble_input(
+                x_in, y_in, bse, grid_shard_shapes, model_comm_group, dataset_name
+            )
 
-        x_data_latent, x_latent = self.encoder[dataset_name](
-            (x_data_latent, x_hidden_latent),
-            batch_size=bse,
-            shard_shapes=(shard_shapes_data, shard_shapes_hidden),
-            edge_attr=encoder_edge_attr,
-            edge_index=encoder_edge_index,
-            model_comm_group=model_comm_group,
-            x_src_is_sharded=in_out_sharded,
-            x_dst_is_sharded=False,
-            keep_x_dst_sharded=True,
-            edge_shard_shapes=enc_edge_shard_shapes,
-            **fwd_mapper_kwargs,
-        )
+            encoder_edge_attr, encoder_edge_index, enc_edge_shard_shapes = self.encoder_graph_provider[
+                dataset_name
+            ].get_edges(
+                batch_size=bse,
+                model_comm_group=model_comm_group,
+            )
+
+            x_data_latent, latent = self.encoder[dataset_name](
+                (x_data_latent, x_hidden_latent),
+                batch_size=bse,
+                shard_shapes=(shard_shapes_data, shard_shapes_hidden),
+                edge_attr=encoder_edge_attr,
+                edge_index=encoder_edge_index,
+                model_comm_group=model_comm_group,
+                x_src_is_sharded=in_out_sharded,
+                x_dst_is_sharded=False,
+                keep_x_dst_sharded=True,
+                edge_shard_shapes=enc_edge_shard_shapes,
+                **fwd_mapper_kwargs,
+            )
+            dataset_latents[dataset_name] = latent
+            if dataset_name == target_ds:
+                x_data_latent_target = x_data_latent
+                shard_shapes_data_target = shard_shapes_data
+
+        # Conditioning enters the processor only by being summed into the shared hidden latent.
+        x_latent = sum(dataset_latents.values())
 
         # Processor
         processor_edge_attr, processor_edge_index, proc_edge_shard_shapes = self.processor_graph_provider.get_edges(
@@ -560,18 +591,18 @@ class AnemoiD2ModelEncProcDec(AnemoiDiffusionModelEncProcDec):
             **processor_kwargs,
         )
 
-        # Decoder
+        # Decoder: only the target dataset is decoded.
         decoder_edge_attr, decoder_edge_index, dec_edge_shard_shapes = self.decoder_graph_provider[
-            dataset_name
+            target_ds
         ].get_edges(
             batch_size=bse,
             model_comm_group=model_comm_group,
         )
 
-        x_out = self.decoder[dataset_name](
-            (x_latent_proc, x_data_latent),
+        x_out = self.decoder[target_ds](
+            (x_latent_proc, x_data_latent_target),
             batch_size=bse,
-            shard_shapes=(shard_shapes_hidden, shard_shapes_data),
+            shard_shapes=(shard_shapes_hidden, shard_shapes_data_target),
             edge_attr=decoder_edge_attr,
             edge_index=decoder_edge_index,
             model_comm_group=model_comm_group,
@@ -582,10 +613,10 @@ class AnemoiD2ModelEncProcDec(AnemoiDiffusionModelEncProcDec):
         )
 
         # Assemble output
-        dtype = x_in_lres.dtype
-        x_out = self._assemble_output(x_out, x_skip, batch_size, ensemble_size, dtype)
+        dtype = y_target.dtype
+        x_out = self._assemble_output(x_out, None, batch_size, ensemble_size, dtype)
 
-        return {"out_hres": x_out}
+        return {target_ds: x_out}
 
     def fwd_with_preconditioning(
         self,
@@ -656,24 +687,35 @@ class AnemoiD2ModelEncProcDec(AnemoiDiffusionModelEncProcDec):
 
     def _assemble_input(
         self,
-        x_in_lres: torch.Tensor,
-        x_in_hres: torch.Tensor,
-        y_noised: torch.Tensor,
+        x: Optional[torch.Tensor],
+        y_noised: Optional[torch.Tensor],
         bse: int,
         grid_shard_shapes: dict | None = None,
         model_comm_group=None,
-        dataset_name="out_hres",
+        dataset_name: str = "out_hres",
     ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[list]]:
-        """Assemble inputs for downscaling: concatenate in_lres (upsampled) + in_hres.
+        """Assemble the per-dataset encoder input, split by role (single-grid role-split).
+
+        - history_less datasets (the decoded target, e.g. out_hres): input is only the
+          noised target + node attrs. This is also what feeds the decoder's skip
+          connection, so it stays thin and can't carry conditioning past the mesh.
+        - conditioning_only datasets (e.g. in_lres, in_hres): input is only their own
+          state + node attrs. They are encoded and summed into the hidden latent, but
+          never decoded and never see the noised target.
+
+        All datasets are assumed to already live on the same grid (no in-model
+        interpolation here) — unlike the multi-grid reference implementation, there is
+        a single `self._graph_name_data`/`self._graph_name_hidden` graph pair per dataset,
+        but they all resolve to the same node count.
 
         Parameters
         ----------
-        x_in_lres : torch.Tensor
-            Low-resolution input, already upsampled to hres grid, shape (batch, time, ensemble, grid, vars)
-        x_in_hres : torch.Tensor
-            High-resolution forcings, shape (batch, time, ensemble, grid, vars)
-        y_noised : torch.Tensor
-            Noised target, shape (batch, time, ensemble, grid, vars)
+        x : Optional[torch.Tensor]
+            This dataset's own input state, shape (batch, time, ensemble, grid, vars).
+            None for history_less datasets.
+        y_noised : Optional[torch.Tensor]
+            Noised target, shape (batch, time, ensemble, grid, vars).
+            None for conditioning_only datasets.
         bse : int
             Batch size * ensemble size
         grid_shard_shapes : dict | None
@@ -681,63 +723,45 @@ class AnemoiD2ModelEncProcDec(AnemoiDiffusionModelEncProcDec):
         model_comm_group : ProcessGroup
             Communication group
         dataset_name : str
-            Name of the output dataset (default "out_hres")
+            Name of the dataset being assembled (default "out_hres")
 
         Returns
         -------
         tuple[torch.Tensor, Optional[torch.Tensor], Optional[list]]
-            Assembled input tensor, skip connection tensor, shard shapes
+            Assembled input tensor, None (no skip tensor is produced here), shard shapes
         """
         assert dataset_name is not None, "dataset_name must be provided."
 
-        # Get node attributes for the data nodes
         node_attributes_data = self.node_attributes[dataset_name](self._graph_name_data, batch_size=bse)
         grid_shard_shapes_data = grid_shard_shapes[dataset_name] if grid_shard_shapes is not None else None
 
-        # Compute skip connection (for residual prediction)
-        x_skip = self.residual[dataset_name](x_in_lres, grid_shard_shapes_data, model_comm_group)
-
-        # Shard node attributes if grid sharding is enabled
         if grid_shard_shapes_data is not None:
             shard_shapes_nodes = get_or_apply_shard_shapes(
                 node_attributes_data, 0, shard_shapes_dim=grid_shard_shapes_data, model_comm_group=model_comm_group
             )
             node_attributes_data = shard_tensor(node_attributes_data, 0, shard_shapes_nodes, model_comm_group)
 
-        # Reshape inputs: combine batch and ensemble dimensions
-        # x_in_lres: low-res input (already upsampled to hres)
-        x_in_lres_reshaped = einops.rearrange(
-            x_in_lres, "batch time ensemble grid vars -> (batch ensemble grid) (time vars)"
-        )
+        if dataset_name in self._history_less_datasets:
+            assert y_noised is not None, f"'{dataset_name}' is history-less but no noised target was provided."
+            feats = einops.rearrange(y_noised, "batch time ensemble grid vars -> (batch ensemble grid) (time vars)")
+        elif dataset_name in self._conditioning_only_datasets:
+            assert x is not None, f"'{dataset_name}' is conditioning-only but no input state was provided."
+            feats = einops.rearrange(x, "batch time ensemble grid vars -> (batch ensemble grid) (time vars)")
+        else:
+            # Not used by the current downscaling role-split config, kept for completeness.
+            x_hist = einops.rearrange(x, "batch time ensemble grid vars -> (batch ensemble grid) (time vars)")
+            y_hist = einops.rearrange(
+                y_noised, "batch time ensemble grid vars -> (batch ensemble grid) (time vars)"
+            )
+            feats = torch.cat((x_hist, y_hist), dim=-1)
 
-        # x_in_hres: high-res forcings
-        x_in_hres_reshaped = einops.rearrange(
-            x_in_hres, "batch time ensemble grid vars -> (batch ensemble grid) (time vars)"
-        )
+        x_data_latent = torch.cat((feats, node_attributes_data), dim=-1)
 
-        # y_noised: noised target (with time dimension)
-        y_noised_reshaped = einops.rearrange(
-            y_noised, "batch time ensemble grid vars -> (batch ensemble grid) (time vars)"
-        )
-
-        # Concatenate all inputs along feature dimension:
-        # [in_lres upsampled, in_hres forcings, noised target, node attributes (lat/lon)]
-        x_data_latent = torch.cat(
-            (
-                x_in_lres_reshaped,
-                x_in_hres_reshaped,
-                y_noised_reshaped,
-                node_attributes_data,
-            ),
-            dim=-1,  # feature dimension
-        )
-
-        # Get shard shapes for the assembled data
         shard_shapes_data = get_or_apply_shard_shapes(
             x_data_latent, 0, shard_shapes_dim=grid_shard_shapes_data, model_comm_group=model_comm_group
         )
 
-        return x_data_latent, x_skip, shard_shapes_data
+        return x_data_latent, None, shard_shapes_data
 
     def _before_sampling(
         self,
