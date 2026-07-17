@@ -1,5 +1,6 @@
 defaults:
   - scalers: diffusiondownscaling   # was global in multids; keep downscaling like your old config
+  - weight_averaging: ema           # step-based EMA (cherry-picked); use 'null' to disable
 
 run_id: null
 fork_run_id: null
