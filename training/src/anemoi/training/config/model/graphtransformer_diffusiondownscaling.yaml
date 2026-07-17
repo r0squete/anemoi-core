@@ -32,7 +32,7 @@ model:
       noise_scheduler:
         schedule_type: "karras"
         sigma_max: 100000.0
-        sigma_min: 0.00
+        sigma_min: 0.02  # was 0.00 -> NaN via log(0)/NoiseScheduler validation error
         rho: 7.0
         num_steps: 80
       diffusion_sampler:

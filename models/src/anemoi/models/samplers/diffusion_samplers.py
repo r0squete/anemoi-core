@@ -32,6 +32,14 @@ class NoiseScheduler(ABC):
     """Base class for noise schedulers."""
 
     def __init__(self, sigma_max: float, sigma_min: float, num_steps: int):
+        if sigma_min <= 0:
+            raise ValueError("sigma_min must be strictly positive; the final zero is added separately.")
+        if sigma_max <= 0:
+            raise ValueError("sigma_max must be strictly positive.")
+        if sigma_max < sigma_min:
+            raise ValueError("sigma_max must be greater than or equal to sigma_min.")
+        if num_steps < 1:
+            raise ValueError("num_steps must be at least 1.")
         self.sigma_max = sigma_max
         self.sigma_min = sigma_min
         self.num_steps = num_steps
@@ -156,6 +164,8 @@ class KarrasScheduler(NoiseScheduler):
             * (self.sigma_min ** (1.0 / self.rho) - self.sigma_max ** (1.0 / self.rho))
         ) ** self.rho
         sigmas = torch.cat([torch.as_tensor(sigmas), torch.zeros_like(sigmas[:1])])
+        if not torch.isfinite(sigmas).all():
+            raise ValueError("Sigma schedule must contain only finite values.")
         return sigmas
 
 
