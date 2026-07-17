@@ -89,6 +89,12 @@ class DiffusionDownscalingModel(DiffusionModel):
     "Dataset names for which a decoder is built (multi-dataset downscaling models)."
     residual_prediction: dict[str, str] = Field(default_factory=dict)
     "Mapping of target_dataset -> source_dataset used to add a residual connection."
+    conditioning_only_datasets: list[str] = Field(default_factory=list)
+    "Dataset names encoded for conditioning only: summed into the hidden mesh, never decoded, "
+    "never given the noised target (role-split anti-leakage)."
+    history_less_datasets: list[str] = Field(default_factory=list)
+    "Dataset names whose encoder input is only the noised target + node attrs, no own state "
+    "(role-split anti-leakage; keeps the decoder's skip connection thin)."
 
 
 class TrainableParameters(PydanticBaseModel):
