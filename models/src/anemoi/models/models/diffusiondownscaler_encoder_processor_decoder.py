@@ -918,8 +918,8 @@ class AnemoiD2ModelEncProcDec(AnemoiDiffusionModelEncProcDec):
             else:
                 remaining_kwargs[key] = value
 
-        LOGGER.debug("noise_scheduler_params (after config merge): %s", noise_scheduler_config)
-        LOGGER.debug("sampler_params (after config merge): %s", sampler_config)
+        LOGGER.info("noise_scheduler_params (resolved): %s", noise_scheduler_config)
+        LOGGER.info("sampler_params (resolved): %s", sampler_config)
 
         with torch.no_grad():
 
@@ -1016,7 +1016,20 @@ class AnemoiD2ModelEncProcDec(AnemoiDiffusionModelEncProcDec):
         if noise_scheduler_params is not None:
             noise_scheduler_config.update(noise_scheduler_params)
 
-        LOGGER.debug("noise_scheduler_config: %s", noise_scheduler_config)
+        LOGGER.info("noise_scheduler_config (resolved): %s", noise_scheduler_config)
+
+        # Guard: EDM preconditioning uses log(sigma); sigma_min <= 0 -> log(0) -> NaN.
+        _sigma_min = noise_scheduler_config.get("sigma_min")
+        _sigma_max = noise_scheduler_config.get("sigma_max")
+        if _sigma_min is not None and _sigma_min <= 0:
+            raise ValueError(
+                f"sigma_min must be > 0: EDM preconditioning uses log(sigma), so "
+                f"sigma_min <= 0 yields log(0) -> NaN. Got sigma_min={_sigma_min}."
+            )
+        if _sigma_min is not None and _sigma_max is not None and _sigma_max <= _sigma_min:
+            raise ValueError(
+                f"sigma_max ({_sigma_max}) must be > sigma_min ({_sigma_min})."
+            )
 
         # Remove schedule_type (used for class selection, not constructor)
         actual_schedule_type = noise_scheduler_config.pop("schedule_type")
@@ -1027,6 +1040,15 @@ class AnemoiD2ModelEncProcDec(AnemoiDiffusionModelEncProcDec):
         scheduler_cls = diffusion_samplers.NOISE_SCHEDULERS[actual_schedule_type]
         scheduler = scheduler_cls(**noise_scheduler_config)
         sigmas = scheduler.get_schedule(x_in_lres_upsampled.device, torch.float64)
+
+        _pos = sigmas[sigmas > 0]
+        LOGGER.info(
+            "Diffusion schedule: type=%s num_steps=%d sigma_max=%.4g sigma_min=%.4g",
+            actual_schedule_type,
+            len(sigmas) - 1,
+            float(sigmas[0]),
+            float(_pos.min()) if _pos.numel() else 0.0,
+        )
 
         # Initialize output with noise
         batch_size, ensemble_size, grid_size = (
