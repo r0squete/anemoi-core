@@ -149,7 +149,7 @@ class DownscalingPlotSample(BasePlotAdditionalMetrics):
         x_in_lres = batch["in_lres"][:, : pl_module.n_step_input].detach()
         input_upsampled = pl_module.model.model.residual["in_lres"](
             x_in_lres,
-            grid_shard_shapes=None,
+            grid_shard_sizes=None,
             model_comm_group=None,
         )[
             self.sample_idx, 0, ...
